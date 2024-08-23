@@ -13,3 +13,6 @@ cargo build --release
 
 # Run a debug build
 cargo run
+
+# docs
+cargo doc --document-private-items
