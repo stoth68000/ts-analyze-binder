@@ -32,54 +32,47 @@ impl Pat {
 }
 */
 
-#[derive(Debug)]
 pub struct StreamStatistics
 {
 	verbose: bool,
-	handle: *mut stream_statistics_s,
+	handle: Box<stream_statistics_s>,
 }
+
 impl Default for StreamStatistics {
-    fn default() -> Self {
-        StreamStatistics {
-            verbose: false,
-			handle: std::ptr::null_mut(),
-        }
-    }
-}
-impl Drop for StreamStatistics {
-	fn drop(&mut self) {
-		// ctx.handle should automatically be released
+	fn default() -> Self {
+	    Self::new(false)
 	}
 }
+
+impl std::fmt::Debug for StreamStatistics {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+		f.debug_struct("StreamStatistics")
+			.field("verbose", &self.verbose)
+			.field("handle", &(&*self.handle as *const _)) // format as a pointer
+			.finish()
+	}
+}
+
 impl StreamStatistics {
 	pub fn new(verbose: bool) -> StreamStatistics {
-		let mut ctx = StreamStatistics::default();
-		ctx.verbose = verbose;
-
-		unsafe {
-			let mut stats = {
-				let stats_layout = std::alloc::Layout::new::<stream_statistics_s>();
-				let stats_ptr = std::alloc::alloc(stats_layout);
-				std::ptr::write_bytes(stats_ptr, 0, stats_layout.size());
-				Box::from_raw(stats_ptr as *mut stream_statistics_s)
-			};
-			ctx.handle = stats.as_mut();
+		let handle = unsafe {
+		    let stats_layout = std::alloc::Layout::new::<stream_statistics_s>();
+		    let stats_ptr = std::alloc::alloc(stats_layout);
+		    std::ptr::write_bytes(stats_ptr, 0, stats_layout.size());
+		    Box::from_raw(stats_ptr as *mut stream_statistics_s)
 		};
 
+		let mut ctx = Self { verbose, handle };
 		ctx.reset();
-
-		return ctx;
+		ctx
 	}
-	#[allow(dead_code)]
+
 	pub fn reset(&mut self) {
 		if self.verbose {
-			println!("StreamStatistics::reset() pre");
+			println!("StreamStatistics::reset()");
 		}
 		unsafe {
-			pid_stats_reset(self.handle);
-		}
-		if self.verbose {
-			println!("StreamStatistics::reset() post");
+			pid_stats_reset(&mut *self.handle)
 		}
 	}
 	#[allow(dead_code)]
@@ -88,7 +81,7 @@ impl StreamStatistics {
 			println!("StreamStatistics::write(?, ?, {})", packet_count);
 		}
 		unsafe {
-			pid_stats_update(self.handle, pkt, packet_count);
+			pid_stats_update(&mut *self.handle, pkt, packet_count);
 		};
 	}
 	#[allow(dead_code)]
@@ -97,7 +90,7 @@ impl StreamStatistics {
 			println!("StreamStatistics::dprintf(?, {})", fd);
 		}
 		unsafe {
-			pid_stats_dprintf(self.handle, fd);
+			pid_stats_dprintf(&mut *self.handle, fd);
 		}
 	}
 }
