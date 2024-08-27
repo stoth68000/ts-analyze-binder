@@ -25,7 +25,7 @@ impl Default for ToolContext {
             input: String::new(),
 			input_type: InputType::InputFile,
 			handle: std::ptr::null_mut(),
-			
+
 			/* pes_extractor */
 			pid: 0,
 			streamid: 0,

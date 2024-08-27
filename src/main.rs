@@ -2,6 +2,8 @@ use std::env;
 use std::process::exit;
 use std::io::Read;
 use std::path::Path;
+use std::net::{UdpSocket, Ipv4Addr};
+use url::Url;
 
 mod copyright;
 mod inputtype;
@@ -30,56 +32,12 @@ fn show_usage_si_streammodel()
 	println!("    -h, --help Display command line help.");
 }
 
-#[allow(dead_code)]
-fn main_si_streammodel() {
+fn process_file(ctx: &mut ToolContext, sm: &mut StreamModel)
+{
+	println!("process_file {:?}", ctx.input);
 
-	let mut ctx = ToolContext::default();
-
-	if env::args().count() < 2 {
-		show_usage_si_streammodel();
-		exit(1);
-	}
-
-	let mut args = env::args().skip(1);
-
-	while let Some(arg) = args.next() {
-		match &arg[..] {
-			"-a" | "--all" => {
-				ctx.process_all = true;
-			},
-			"-h" | "--help" => {
-				show_usage_si_streammodel();
-				exit(1);
-			},
-			"-i" | "--input" => {
-				if let Some(arg_config) = args.next() {
-					ctx.input = arg_config;
-					ctx.input_type = InputType::InputFile;
-				} else {
-					panic!("No value specified for parameter -i, --input, aborting.");
-				}
-			},
-			"-v" | "--verbose" => {
-				ctx.verbose += 1;
-			},
-			_ => {
-			},
-		}
-	}
-
-	if ctx.input.chars().count() < 1 {
-		show_usage_si_streammodel();
-		eprintln!("\n-i, --input is mandatory, aborting");
-		exit(1);
-	}
-	println!("args: {ctx:?}");
-	println!();
-
-	// Why does this have to be mutable?
-	let mut sm = StreamModel::new(false);
-
-	let mut file_in = std::fs::File::open(ctx.input).unwrap();
-	let mut buffer = [0u8; 128 * 188];
+	let mut file_in = std::fs::File::open(ctx.input.as_str()).unwrap();
+	let mut buffer = [0u8; 16 * 188];
 	let mut processed = 0;
 	
     loop {
@@ -106,9 +64,147 @@ fn main_si_streammodel() {
 			println!("PAT.program_count = {}", pat.program_count);
 
 			if ctx.process_all == false {
-				break;
+				return;
 			}
 		}
+	}
+}
+
+fn process_udp_socket(ctx: &mut ToolContext, sm: &mut StreamModel) -> Result<(), Box<dyn std::error::Error>>
+{
+	println!("process_udp_socket1 {:?}", ctx.input);
+
+	// Parse the URL
+	let url = match Url::parse(&ctx.input) {
+		Ok(url) => url,
+		Err(e) => {
+			eprintln!("Error parsing URL: {:?}", e);
+			return Err(Box::new(e));
+		}
+	};
+
+    if url.scheme() != "udp" {
+        eprintln!("Invalid URL scheme. Expected 'udp'.");
+        return Err("Bad URL")?;
+    }
+
+    let host = match url.host_str() {
+        Some(host) => host,
+        None => {
+            eprintln!("No host found in URL.");
+            return Err("Bad host")?;
+        }
+    };
+
+    let port = match url.port() {
+        Some(port) => port,
+        None => {
+            eprintln!("No port found in URL.");
+            return Err("Bad port")?;
+        }
+    };
+
+    // Create a UDP socket bound to the port
+    // Bind the socket to the multicast port
+	let without_prefix = format!("{}:{}", host, port);
+    let socket = UdpSocket::bind(without_prefix)?;
+
+	// Join the multicast group
+	let multicast_addr: Ipv4Addr = host.parse().expect("Invalid multicast address");
+	socket.join_multicast_v4(&multicast_addr, &Ipv4Addr::new(0, 0, 0, 0))?;
+    socket.set_multicast_loop_v4(true)?;
+  
+	let mut buffer = [0u8; 7 * 188];
+	let mut processed = 0;
+	
+    loop {
+		let (nbytes, src) = socket.recv_from(&mut buffer)?;
+        processed += nbytes;
+
+		if ctx.verbose > 0 {
+        	println!("StreamModel - Read {} / {} bytes, src {:?}", nbytes, processed, src);
+		}
+
+        let b: i32 = nbytes.try_into().unwrap();
+
+		let mut complete = false;
+		sm.write(&buffer[0], b / 188, &mut complete);
+
+		if complete == true {
+			let pat = sm.query_model();
+			pat.print();
+
+			if ctx.verbose > 0 {
+				println!("PAT.program_count = {}", pat.program_count);
+			}
+
+			if ctx.process_all == false {
+				return Ok(());
+			}
+		}
+	}
+}
+
+#[allow(dead_code)]
+fn main_si_streammodel() {
+
+	let mut ctx = ToolContext::default();
+
+	if env::args().count() < 2 {
+		show_usage_si_streammodel();
+		exit(1);
+	}
+
+	let mut args = env::args().skip(1);
+
+	while let Some(arg) = args.next() {
+		match &arg[..] {
+			"-a" | "--all" => {
+				ctx.process_all = true;
+			},
+			"-h" | "--help" => {
+				show_usage_si_streammodel();
+				exit(1);
+			},
+			"-i" | "--input" => {
+				if let Some(arg_config) = args.next() {
+					if arg_config.to_lowercase().contains("udp://") {
+						ctx.input_type = InputType::InputUDPSocket;
+						ctx.input = arg_config;
+					} else {
+						ctx.input = arg_config;
+						ctx.input_type = InputType::InputFile;
+					}
+				} else {
+					panic!("No value specified for parameter -i, --input, aborting.");
+				}
+			},
+			"-v" | "--verbose" => {
+				ctx.verbose += 1;
+			},
+			_ => {
+			},
+		}
+	}
+
+	if ctx.input.chars().count() < 1 {
+		show_usage_si_streammodel();
+		eprintln!("\n-i, --input is mandatory, aborting");
+		exit(1);
+	}
+	println!("args: {ctx:?}");
+
+	// Why does this have to be mutable?
+	let mut sm = StreamModel::new(false);
+
+	match ctx.input_type {
+		InputType::InputUnknown => (),
+		InputType::InputUDPSocket => {
+			let _ = process_udp_socket(&mut ctx, &mut sm);
+		},
+		InputType::InputFile => {
+			process_file(&mut ctx, &mut sm);
+		},
 	}
 
 }
@@ -280,7 +376,8 @@ fn main_stream_statistics() {
 	println!();
 
 	// Why does this have to be mutable?
-	let mut ss = StreamStatistics::new(true);
+	let mut ss = StreamStatistics::new(false);
+	println!("StreamStatistics: {:?}", ss);
 
 	let mut file_in = std::fs::File::open(ctx.input).unwrap();
 	let mut buffer = [0u8; 128 * 188];
@@ -318,7 +415,7 @@ fn main() {
 	println!("arg[0]: {}", toolname);
 
 	match toolname {
-		"ts-analyze-binder" => main_stream_statistics(),
+		"ts-analyze-binder" => main_si_streammodel(),
 		"tsrust_si_streammodel" => main_si_streammodel(),
 		"tsrust_pes_extractor" => main_pes_extractor(),
 		"tsrust_stream_statistics" => main_stream_statistics(),

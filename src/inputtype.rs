@@ -5,9 +5,11 @@ pub enum InputType {
 	#[default]
     InputUnknown,
     InputFile,
+    InputUDPSocket,
     //InputAvio,
     //InputPcap,
 }
+
 /* The #[derive(Default,Debug)] above implements this by default.
 impl Display for InputType {
 	fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
